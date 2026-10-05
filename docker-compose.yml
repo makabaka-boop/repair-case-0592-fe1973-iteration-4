@@ -1,0 +1,57 @@
+services:
+  api:
+    build: ./backend
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  web:
+    build: ./frontend
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    # nginx 已在请求时解析 api（见 frontend/nginx.conf），无需等待 api 就绪，
+    # 避免因 api 健康检查抖动导致 web 无法启动的连锁失败
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # 一次性验收服务：跑完即退出，退出码即验收结果。
+  # verify.py 自身会等待服务就绪（最长 120 秒），因此只需容器启动即可，
+  # 不再被健康检查状态阻塞。
+  verify:
+    build: ./verify
+    depends_on:
+      api:
+        condition: service_started
+      web:
+        condition: service_started
+    restart: "no"
+
+  # 可选：容器化 Playwright 联调（docker compose --profile e2e run --rm e2e）
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.47.2-jammy
+    profiles: ["e2e"]
+    working_dir: /work
+    volumes:
+      - ./frontend:/work
+    environment:
+      BASE_URL: http://web
+    command: sh -c "npm ci && npx playwright test"
+    depends_on:
+      web:
+        condition: service_healthy
